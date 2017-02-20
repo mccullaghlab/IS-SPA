@@ -14,9 +14,9 @@ CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
         parameter(nmax=10000)
 C paramtop values
         integer natom,ntyp,nbonh,nbona,ntheth,ntheta
-        integer nphih,nphia,nnb,nres
+        integer nphih,nphia,nnb,nres,nmol
         double precision charge(nmax),mass(nmax)
-        integer ityp(nmax),nbparm(nmax),nrpnt(nmax)
+        integer ityp(nmax),nbparm(nmax),nrpnt(nmax),nmpnt(nmax)
         double precision kbnd(nmax),rbnd(nmax),kang(nmax),tang(nmax)
         double precision kdih(nmax),pdih(nmax),ndih(nmax)
         double precision scee(nmax),scnb(nmax)
@@ -39,14 +39,15 @@ C
 C
         character*64 rst,frc,xyz,vel,ene,com,fname,temp
         character*64 frst,prmtop
-C     
+C
         integer i,j,igo,jgo,kgo,tid,ip,ivel
         double precision rcom(3),r2,mtot
-C     
+C
         common /param/ natom,ntyp,nbonh,nbona,ntheth,ntheta,nphih,nphia,
      &       nnb,nres,charge,mass,ityp,nbparm,nrpnt,kbnd,rbnd,kang,tang,
      &       kdih,pdih,ndih,scee,scnb,alj,blj,bhlist,balist,ahlist,
-     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb
+     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb,
+     &       nmpnt,nmol
 C
         common /solvent/ gr2,alp,x0,g0,As,Bs,vtot,w,npts,ncpu
 C
@@ -54,7 +55,7 @@ C
 C$OMP threadprivate(/random/)
 C
         call omp_set_dynamic(.false.)
-        ncpu=10
+        ncpu=4
         dt=0.002d0
         T=298.d0
 C
@@ -76,24 +77,27 @@ C$OMP& private(tid)
 C$OMP& copyin(ma,inext,inextp)
         tid=omp_get_thread_num()
         inext=inext+tid
-        if(inext.gt.55) inext=inext-55
+        if (inext.gt.55) inext=inext-55
         inextp=inextp+tid
-        if(inextp.gt.55) inextp=inextp-55
+        if (inextp.gt.55) inextp=inextp-55
 C$OMP end parallel
 C  Get the respective parameters for atom types
         call setparam(prmtop)
+        call makemol()
 C  Get the solvent effect parameters
         call setsolvent()
 C  Get the positions, velocities, and atom types
         call getx(x,v,lbox,hlbox,natom,frst,ivel,T,mass)
-        call wrap(x,lbox,hlbox,nres,nrpnt)
+        call wrap(x,lbox,hlbox,nmol,nmpnt)
         do i=1,natom
-          if(mass(i).lt.1.5d0) then
-            do j=1,3
-              v(j,i)=v(j,i)/dsqrt(12.d0)
-            enddo
+          if (mass(i).lt.1.5d0) then
+            if (ivel.eq.0) then
+              do j=1,3
+                v(j,i)=v(j,i)/dsqrt(12.d0)
+              enddo
+            endif
+            mass(i)=12.01d0
           endif
-          mass(i)=12.01d0
         enddo
 C
         call centerv(v,natom,mass)
@@ -132,33 +136,33 @@ C
         open(16,FILE=ene,STATUS='unknown')
         open(15,FILE=com,STATUS='unknown')
         call getene(x,v,lbox,hlbox,16,0)
-C        do igo=1,15000
         do igo=1,1500
+          write(0,*) igo
           do jgo=1,10
             do kgo=1,100
 C  Get new forces
               call getfrc(x,lbox,hlbox,f)
-C  Increment velocity
+C  Increment velocity and position
+C$OMP parallel do schedule(static) num_threads(ncpu)
+C$OMP& private(i,j,try)
+C$OMP& shared(natom,x,v,f,pnu,T,mass,hdt,dt)
               do i=1,natom
                 try=ran3()
-                if(try.lt.pnu) then
+                if (try.lt.pnu) then
                   call thermo(v,T,mass,i)
                   do j=1,3
                     v(j,i)=v(j,i)+f(j,i)/mass(i)*hdt
+                    x(j,i)=x(j,i)+dt*v(j,i)
                   enddo
                 else
                   do j=1,3
                     v(j,i)=v(j,i)+f(j,i)/mass(i)*dt
+                    x(j,i)=x(j,i)+dt*v(j,i)
                   enddo
                 endif
               enddo
-C  Increment position
-              do i=1,natom
-                do j=1,3
-                  x(j,i)=x(j,i)+dt*v(j,i)
-                enddo
-              enddo
-              call wrap(x,lbox,hlbox,nres,nrpnt)
+C$OMP end parallel do
+              call wrap(x,lbox,hlbox,nmol,nmpnt)
             enddo
             call getcom(x,lbox,hlbox,umblist,mass,r2,rcom)
             write(15,999) igo,jgo-1,r2
@@ -197,11 +201,11 @@ C
 C$OMP threadprivate(/random/)
 C
         inext=inext+1
-        if(inext.eq.56) inext=1
+        if (inext.eq.56) inext=1
         inextp=inextp+1
-        if(inextp.eq.56) inextp=1
+        if (inextp.eq.56) inextp=1
         mj=ma(inext)-ma(inextp)
-        if(mj.le.mz)mj=mj+mbig1
+        if (mj.le.mz)mj=mj+mbig1
         ma(inext)=mj
         ran3=mj*fac
 C
@@ -261,14 +265,14 @@ C
           jmin=nrpnt(i)
           do k=1,3
             dx=x(k,jmin)
-            if(dx.gt.lbox) then
+            if (dx.gt.lbox) then
               ndx=int(dx/lbox)
               jmax=nrpnt(i+1)-1
               do j=jmin,jmax
                 x(k,j)=x(k,j)-dble(ndx)*lbox
               enddo
             endif
-            if(dx.lt.0.d0) then
+            if (dx.lt.0.d0) then
               ndx=int(-dx/lbox+1)
               jmax=nrpnt(i+1)-1
               do j=jmin,jmax
@@ -295,7 +299,7 @@ C
         mtot=0.d0
         do i=1,natom
           do j=1,3
-            vtot(j)=mass(i)*v(j,i)
+            vtot(j)=vtot(j)+mass(i)*v(j,i)
           enddo
           mtot=mtot+mass(i)
         enddo
@@ -315,7 +319,7 @@ CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
         integer nmax
         parameter(nmax=10000)
         integer natom,ntyp,nbonh,nbona,ntheth,ntheta,nphih,nphia,natyp
-        integer nnb,nres,numbnd,numang,nptra
+        integer nnb,nres,numbnd,numang,nptra,nmol
         double precision charge(nmax),mass(nmax)
         integer ityp(nmax),nexc(nmax),nbparm(nmax),nrpnt(nmax)
         double precision kbnd(nmax),rbnd(nmax),kang(nmax),tang(nmax)
@@ -325,7 +329,7 @@ CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
         integer bhlist(3,nmax),balist(3,nmax)
         integer ahlist(4,nmax),aalist(4,nmax)
         integer dhlist(5,nmax),dalist(5,nmax)
-        integer excl(nmax)
+        integer excl(nmax),nmpnt(nmax)
         double precision kumb1,kumb2,rumb
         integer umblist(nmax,2)
         integer i,j,inext,i1,i2,i3,i4
@@ -335,7 +339,8 @@ C
         common /param/ natom,ntyp,nbonh,nbona,ntheth,ntheta,nphih,nphia,
      &       nnb,nres,charge,mass,ityp,nbparm,nrpnt,kbnd,rbnd,kang,tang,
      &       kdih,pdih,ndih,scee,scnb,alj,blj,bhlist,balist,ahlist,
-     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb
+     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb,
+     &       nmpnt,nmol
 C
         open(20,FILE=prmtop,STATUS='old')
 C  numbers
@@ -565,7 +570,7 @@ C  Bond list w/o H
      &         balist(i3,(j+5)/3),balist(i1,(j+6)/3),balist(i2,(j+7)/3),
      &         balist(i3,(j+8)/3),balist(i1,(j+9)/3)
         enddo
-        do i=1,nbonh
+        do i=1,nbona
           balist(1,i)=balist(1,i)/3+1
           balist(2,i)=balist(2,i)/3+1
         enddo
@@ -637,19 +642,23 @@ C  Dihedral list w/ H
         do i=1,nphih
           dhlist(1,i)=dhlist(1,i)/3+1
           dhlist(2,i)=dhlist(2,i)/3+1
-          if(dhlist(3,i).lt.0) then
+          if (dhlist(3,i).lt.0) then
             dhlist(3,i)=dhlist(3,i)/3-1
           else
             dhlist(3,i)=dhlist(3,i)/3+1
           endif
-          dhlist(4,i)=dhlist(4,i)/3+1
+          if (dhlist(4,i).lt.0) then
+            dhlist(4,i)=dhlist(4,i)/3-1
+          else
+            dhlist(4,i)=dhlist(4,i)/3+1
+          endif
         enddo
         do i=2,nphih
           j=i-1
-          if(iabs(dhlist(1,i)).eq.iabs(dhlist(1,j))) then
-            if(iabs(dhlist(2,i)).eq.iabs(dhlist(2,j))) then
-              if(iabs(dhlist(3,i)).eq.iabs(dhlist(3,j))) then
-                if(iabs(dhlist(4,i)).eq.iabs(dhlist(4,j))) then
+          if (iabs(dhlist(1,i)).eq.iabs(dhlist(1,j))) then
+            if (iabs(dhlist(2,i)).eq.iabs(dhlist(2,j))) then
+              if (iabs(dhlist(3,i)).eq.iabs(dhlist(3,j))) then
+                if (iabs(dhlist(4,i)).eq.iabs(dhlist(4,j))) then
                   dhlist(2,i)=-dhlist(2,i)
                 endif
               endif
@@ -672,19 +681,23 @@ C  Dihedral list w/o H
         do i=1,nphia
           dalist(1,i)=dalist(1,i)/3+1
           dalist(2,i)=dalist(2,i)/3+1
-          if(dalist(3,i).lt.0) then
+          if (dalist(3,i).lt.0) then
             dalist(3,i)=dalist(3,i)/3-1
           else
             dalist(3,i)=dalist(3,i)/3+1
           endif
-          dalist(4,i)=dalist(4,i)/3+1
+          if (dalist(4,i).lt.0) then
+            dalist(4,i)=dalist(4,i)/3-1
+          else
+            dalist(4,i)=dalist(4,i)/3+1
+          endif
         enddo
         do i=2,nphia
           j=i-1
-          if(iabs(dalist(1,i)).eq.iabs(dalist(1,j))) then
-            if(iabs(dalist(2,i)).eq.iabs(dalist(2,j))) then
-              if(iabs(dalist(3,i)).eq.iabs(dalist(3,j))) then
-                if(iabs(dalist(4,i)).eq.iabs(dalist(4,j))) then
+          if (iabs(dalist(1,i)).eq.iabs(dalist(1,j))) then
+            if (iabs(dalist(2,i)).eq.iabs(dalist(2,j))) then
+              if (iabs(dalist(3,i)).eq.iabs(dalist(3,j))) then
+                if (iabs(dalist(4,i)).eq.iabs(dalist(4,j))) then
                   dalist(2,i)=-dalist(2,i)
                 endif
               endif
@@ -717,9 +730,9 @@ CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
         parameter(nmax=10000)
 C paramtop values
         integer natom,nbonh,nbona,ntheth,ntheta
-        integer nphih,nphia,nnb,nres,ntyp
+        integer nphih,nphia,nnb,nres,ntyp,nmol
         double precision charge(nmax),mass(nmax)
-        integer ityp(nmax),nbparm(nmax),nrpnt(nmax)
+        integer ityp(nmax),nbparm(nmax),nrpnt(nmax),nmpnt(nmax)
         double precision kbnd(nmax),rbnd(nmax),kang(nmax),tang(nmax)
         double precision kdih(nmax),pdih(nmax),ndih(nmax)
         double precision scee(nmax),scnb(nmax)
@@ -730,7 +743,7 @@ C paramtop values
         integer excl(nmax)
         double precision kumb1,kumb2,rumb
         integer umblist(nmax,2)
-C 
+C
         double precision x(3,nmax),v(3,nmax)
         double precision lbox,hlbox,dx
 C
@@ -743,7 +756,8 @@ C
         common /param/ natom,ntyp,nbonh,nbona,ntheth,ntheta,nphih,nphia,
      &       nnb,nres,charge,mass,ityp,nbparm,nrpnt,kbnd,rbnd,kang,tang,
      &       kdih,pdih,ndih,scee,scnb,alj,blj,bhlist,balist,ahlist,
-     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb
+     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb,
+     &       nmpnt,nmol
 C
         call getcom(x,lbox,hlbox,umblist,mass,r2,rcom)
         erst=10.d0*(r2-rumb)**2
@@ -751,7 +765,7 @@ C
         elj=0.d0
         ec=0.d0
         iex=1
-        if(excl(1).eq.0) then
+        if (excl(1).eq.0) then
           jex=1
         else
           jex=0
@@ -759,17 +773,17 @@ C
         do i=1,natom
           it=ityp(i)
           do j=i+1,natom
-            if(excl(iex).ne.j) then
+            if (excl(iex).ne.j) then
               jt=ityp(j)
               nlj=ntyp*(it-1)+jt
               nlj=nbparm(nlj)
               r2=0.d0
               do k=1,3
                 dx=x(k,i)-x(k,j)
-                if(dx.gt.hlbox) then
+                if (dx.gt.hlbox) then
                   dx=dx-lbox
                 endif
-                if(dx.lt.-hlbox) then
+                if (dx.lt.-hlbox) then
                   dx=dx+lbox
                 endif
                 r2=r2+dx*dx
@@ -782,11 +796,11 @@ C
             endif
           enddo
           if (excl(iex).eq.0) then
-            if(jex.eq.0) then
+            if (jex.eq.0) then
               jex=1
             else
               iex=iex+1
-              if(excl(iex).eq.0) then
+              if (excl(iex).eq.0) then
                 jex=1
               else
                 jex=0
@@ -834,9 +848,9 @@ C
             c12=c12+d1(k)*d2(k)
           enddo
           b=-c12/dsqrt(c11*c22)
-          if(b.ge.1.d0) then
+          if (b.ge.1.d0) then
             th=1.d-16
-          elseif(b.le.-1.d0) then
+          elseif (b.le.-1.d0) then
             th=3.1415926535d0
           else
             th=dacos(b)
@@ -859,9 +873,9 @@ C
             c12=c12+d1(k)*d2(k)
           enddo
           b=-c12/dsqrt(c11*c22)
-          if(b.ge.1.d0) then
+          if (b.ge.1.d0) then
             th=1.d-16
-          elseif(b.le.-1.d0) then
+          elseif (b.le.-1.d0) then
             th=3.1415926535d0
           else
             th=dacos(b)
@@ -878,7 +892,8 @@ C
           i3=dhlist(3,i)
           i4=dhlist(4,i)
           i5=dhlist(5,i)
-          if(i3.lt.0) then
+          if (i4.lt.0) i4=-i4
+          if (i3.lt.0) then
             i3=-i3
           else
             r2=0.d0
@@ -894,7 +909,7 @@ C
             e14v=e14v+r6*(alj(nlj)*r6-blj(nlj))/scnb(i5)
           endif
 C
-          if(i2.gt.0) then
+          if (i2.gt.0) then
             c11=0.d0
             c12=0.d0
             c13=0.d0
@@ -912,9 +927,9 @@ C
             a=c12*c23-c13*c22
             b=(c11*c22-c12*c12)*(c22*c33-c23*c23)
             b=a/dsqrt(b)
-            if(b.le.-1.d0) then
+            if (b.le.-1.d0) then
               th=3.1415926535d0
-            elseif(b.ge.1.d0) then
+            elseif (b.ge.1.d0) then
               th=1.d-16
             else
               th=dacos(b)
@@ -930,7 +945,8 @@ C
           i3=dalist(3,i)
           i4=dalist(4,i)
           i5=dalist(5,i)
-          if(i3.lt.0) then
+          if (i4.lt.0) i4=-i4
+          if (i3.lt.0) then
             i3=-i3
           else
             r2=0.d0
@@ -946,7 +962,7 @@ C
             e14v=e14v+r6*(alj(nlj)*r6-blj(nlj))/scnb(i5)
           endif
 C
-          if(i2.gt.0) then
+          if (i2.gt.0) then
             c11=0.d0
             c12=0.d0
             c13=0.d0
@@ -964,9 +980,9 @@ C
             a=c12*c23-c13*c22
             b=(c11*c22-c12*c12)*(c22*c33-c23*c23)
             b=a/dsqrt(b)
-            if(b.le.-1.d0) then
+            if (b.le.-1.d0) then
               th=3.1415926535d0
-            elseif(b.ge.1.d0) then
+            elseif (b.ge.1.d0) then
               th=1.d-16
             else
               th=dacos(b)
@@ -1007,9 +1023,9 @@ CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
         parameter(nmax=10000)
 C paramtop values
         integer natom,nbonh,nbona,ntheth,ntheta
-        integer nphih,nphia,nnb,nres,ntyp
+        integer nphih,nphia,nnb,nres,ntyp,nmol
         double precision charge(nmax),mass(nmax)
-        integer ityp(nmax),nbparm(nmax),nrpnt(nmax)
+        integer ityp(nmax),nbparm(nmax),nrpnt(nmax),nmpnt(nmax)
         double precision kbnd(nmax),rbnd(nmax),kang(nmax),tang(nmax)
         double precision kdih(nmax),pdih(nmax),ndih(nmax)
         double precision scee(nmax),scnb(nmax)
@@ -1038,7 +1054,7 @@ C
         double precision c11,c12,c13,c22,c23,c33,a,b
         double precision t1,t2,t3,t4,t5,t6,f1,f4
 C
-        double precision rnow,x1,x2,x3,y1,y2,y3,dx,dy,dz,fx,fy,fz
+        double precision rnow,x1,x2,x3,y1,y2,y3,dx,dy,dz
         double precision gnow,fs,try,prob
         double precision ran3
         double precision rcom(3)
@@ -1047,42 +1063,37 @@ C
         common /param/ natom,ntyp,nbonh,nbona,ntheth,ntheta,nphih,nphia,
      &       nnb,nres,charge,mass,ityp,nbparm,nrpnt,kbnd,rbnd,kang,tang,
      &       kdih,pdih,ndih,scee,scnb,alj,blj,bhlist,balist,ahlist,
-     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb
+     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb,
+     &       nmpnt,nmol
 C
         common /solvent/ gr2,alp,x0,g0,As,Bs,vtot,w,npts,ncpu
 C
         common /random/ ma,inext,inextp
 C$OMP threadprivate(/random/)
 C
-        do i=1,natom
-          f(1,i)=0.d0
-          f(2,i)=0.d0
-          f(3,i)=0.d0
-        enddo
 C  Solvent!
+C$OMP parallel do schedule(dynamic) num_threads(ncpu)
+C$OMP& private(i,it,j,jt,k,ngo,rnow,prob,try,x1,x2,x3,y1,y2,y3,r2
+C$OMP&             ,gnow,igo,dx,dy,dz,r6,fs,dis)
+C$OMP& shared(natom,npts,w,x0,ityp,gr2,alp,g0,f,x,lbox,hlbox)
         do i=1,natom
+          do j=1,3
+            f(j,i)=0.d0
+          enddo
           it=ityp(i)
           do j=1,natom
-            if(j.ne.i) then
+            if (j.ne.i) then
               do k=1,3
                 dis(k,j)=x(k,i)-x(k,j)
-                if(dis(k,j).gt.hlbox) then
+                if (dis(k,j).gt.hlbox) then
                   dis(k,j)=dis(k,j)-lbox
                 endif
-                if(dis(k,j).lt.-hlbox) then
+                if (dis(k,j).lt.-hlbox) then
                   dis(k,j)=dis(k,j)+lbox
                 endif
               enddo
             endif
           enddo
-          fx=0.d0
-          fy=0.d0
-          fz=0.d0
-C$OMP parallel num_threads(ncpu)
-C$OMP& private(j,jt,ngo,rnow,prob,try,x1,x2,x3,y1,y2,y3,r2
-C$OMP&             ,gnow,igo,dx,dy,dz,r6,fs)
-C$OMP& shared(i,it,natom,npts,w,x0,dis,ityp,gr2,alp,g0,f)
-C$OMP do schedule(guided) reduction(+:fx,fy,fz)
           do ngo=1,npts
             rnow=1.d0-2.d0*ran3()
             prob=rnow*rnow
@@ -1111,11 +1122,11 @@ C
             j=0
             do while(igo.eq.1)
               j=j+1
-              if(j.eq.i) j=j+1
+              if (j.eq.i) j=j+1
               if (i.eq.natom) then
-                if(j.eq.natom-1) igo=-1
+                if (j.eq.natom-1) igo=-1
               else
-                if(j.eq.natom) igo=-1
+                if (j.eq.natom) igo=-1
               endif
               jt=ityp(j)
 C
@@ -1123,28 +1134,26 @@ C
               dy=y2+dis(2,j)
               dz=y3+dis(3,j)
               r2=dx*dx+dy*dy+dz*dz
-              if(r2.lt.gr2(1,jt)) then
+              if (r2.lt.gr2(1,jt)) then
                 igo=0
-              elseif(r2.lt.gr2(2,jt)) then
+              elseif (r2.lt.gr2(2,jt)) then
                 gnow=gnow*(-alp(jt)*(dsqrt(r2)-x0(jt))**2+g0(jt))
               endif
             enddo
 C
-            if(igo.eq.-1) then
+            if (igo.eq.-1) then
               r6=rnow**(-6)
               fs=gnow*r6*(Bs(it)-As(it)*r6)
-              fx=fx+fs*y1
-              fy=fy+fs*y2
-              fz=fz+fs*y3
+              f(1,i)=f(1,i)+fs*y1
+              f(2,i)=f(2,i)+fs*y2
+              f(3,i)=f(3,i)+fs*y3
             endif
           enddo
-C$OMP enddo
-C$OMP end parallel
-C
-          f(1,i)=fx*vtot(it)
-          f(2,i)=fy*vtot(it)
-          f(3,i)=fz*vtot(it)
+          do j=1,3
+            f(j,i)=f(j,i)*vtot(it)
+          enddo
         enddo
+C$OMP end parallel do
 C  Restraint
         call getcom(x,lbox,hlbox,umblist,mass,r2,rcom)
         frst1=kumb1*(r2-rumb)
@@ -1163,7 +1172,7 @@ C  Restraint
         enddo
 C  Non-bonded
         iex=1
-        if(excl(1).eq.0) then
+        if (excl(1).eq.0) then
           jex=1
         else
           jex=0
@@ -1171,17 +1180,17 @@ C  Non-bonded
         do i=1,natom
           it=ityp(i)
           do j=i+1,natom
-            if(excl(iex).ne.j) then
+            if (excl(iex).ne.j) then
               jt=ityp(j)
               nlj=ntyp*(it-1)+jt
               nlj=nbparm(nlj)
               r2=0.d0
               do k=1,3
                 dx=x(k,i)-x(k,j)
-                if(dx.gt.hlbox) then
+                if (dx.gt.hlbox) then
                   dx=dx-lbox
                 endif
-                if(dx.lt.-hlbox) then
+                if (dx.lt.-hlbox) then
                   dx=dx+lbox
                 endif
                 r(k)=dx
@@ -1199,11 +1208,11 @@ C  Non-bonded
             endif
           enddo
           if (excl(iex).eq.0) then
-            if(jex.eq.0) then
+            if (jex.eq.0) then
               jex=1
             else
               iex=iex+1
-              if(excl(iex).eq.0) then
+              if (excl(iex).eq.0) then
                 jex=1
               else
                 jex=0
@@ -1259,9 +1268,9 @@ C  Angles
             c12=c12+d1(k)*d2(k)
           enddo
           b=-c12/dsqrt(c11*c22)
-          if(b.ge.1.d0) then
+          if (b.ge.1.d0) then
             th=1.d-16
-          elseif(b.le.-1.d0) then
+          elseif (b.le.-1.d0) then
             th=3.1415926535d0
           else
             th=dacos(b)
@@ -1290,9 +1299,9 @@ C  Angles
             c12=c12+d1(k)*d2(k)
           enddo
           b=-c12/dsqrt(c11*c22)
-          if(b.ge.1.d0) then
+          if (b.ge.1.d0) then
             th=1.d-16
-          elseif(b.le.-1.d0) then
+          elseif (b.le.-1.d0) then
             th=3.1415926535d0
           else
             th=dacos(b)
@@ -1312,7 +1321,8 @@ C  Dihedrals
           i3=dhlist(3,i)
           i4=dhlist(4,i)
           i5=dhlist(5,i)
-          if(i3.lt.0) then
+          if (i4.lt.0) i4=-i4
+          if (i3.lt.0) then
             i3=-i3
           else
             r2=0.d0
@@ -1333,7 +1343,7 @@ C  Dihedrals
             enddo
           endif
 C
-          if(i2.gt.0) then
+          if (i2.gt.0) then
             c11=0.d0
             c12=0.d0
             c13=0.d0
@@ -1351,30 +1361,37 @@ C
               c23=c23+d2(k)*d3(k)
               c33=c33+d3(k)*d3(k)
             enddo
-C     
+C
             t1=c13*c22-c12*c23
             t2=c11*c23-c12*c13
             t3=c12*c12-c11*c22
             t4=c22*c33-c23*c23
             t5=c13*c23-c12*c33
             t6=-t1
-C     
+C
             b=dsqrt(-t3*t4)
-C     
+C
             a=t6/b
-            if(a.le.-1.d0) then
-              th=3.1415926535d0
-            elseif(a.ge.1.d0) then
-              th=1.d-16
+            if (a.le.-1.d0) then
+              fdih=0.d0
+            elseif (a.ge.1.d0) then
+              fdih=0.d0
             else
               th=dacos(a)
+              fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
+     &                        /dsin(th)*c22/b
             endif
-            fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
-     &                                         /dsin(th)*c22/b
           else
             i2=-i2
-            fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
-     &                                         /dsin(th)*c22/b
+            if (a.le.-1.d0) then
+              fdih=0.d0
+            elseif (a.ge.1.d0) then
+              fdih=0.d0
+            else
+              th=dacos(a)
+              fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
+     &                        /dsin(th)*c22/b
+            endif
           endif
           do k=1,3
             f1=fdih*(t1*d1(k)+t2*d2(k)+t3*d3(k))/t3
@@ -1391,7 +1408,8 @@ C
           i3=dalist(3,i)
           i4=dalist(4,i)
           i5=dalist(5,i)
-          if(i3.lt.0) then
+          if (i4.lt.0) i4=-i4
+          if (i3.lt.0) then
             i3=-i3
           else
             r2=0.d0
@@ -1412,7 +1430,7 @@ C
             enddo
           endif
 C
-          if(i2.gt.0) then
+          if (i2.gt.0) then
             c11=0.d0
             c12=0.d0
             c13=0.d0
@@ -1441,20 +1459,26 @@ C
             b=dsqrt(-t3*t4)
 C
             a=t6/b
-            if(a.le.-1.d0) then
-              th=3.1415926535d0
-            elseif(a.ge.1.d0) then
-              th=1.d-16
+            if (a.le.-1.d0) then
+              fdih=0.d0
+            elseif (a.ge.1.d0) then
+              fdih=0.d0
             else
               th=dacos(a)
+              fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
+     &                        /dsin(th)*c22/b
             endif
-C
-            fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
-     &                                         /dsin(th)*c22/b
           else
             i2=-i2
-            fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
-     &                                         /dsin(th)*c22/b
+            if (a.le.-1.d0) then
+              fdih=0.d0
+            elseif (a.ge.1.d0) then
+              fdih=0.d0
+            else
+              th=dacos(a)
+              fdih=ndih(i5)*kdih(i5)*dsin(ndih(i5)*th-pdih(i5))
+     &                        /dsin(th)*c22/b
+            endif
           endif
           do k=1,3
             f1=fdih*(t1*d1(k)+t2*d2(k)+t3*d3(k))/t3
@@ -1522,14 +1546,14 @@ C
           do j=1,3
             write(nf,999) x(j,i)
             k=k+1
-            if(k.eq.11) then
+            if (k.eq.11) then
               write(nf,998)
               k=1
             endif
           enddo
         enddo
-        if(k.ne.11) write(nf,998)
-        if(nf.eq.19) then
+        if (k.ne.11) write(nf,998)
+        if (nf.eq.19) then
           do i=1,3
             write(nf,999) lbox
           enddo
@@ -1544,23 +1568,34 @@ CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
       subroutine getcom(x,lbox,hlbox,umblist,mass,r2,rcom)
         integer nmax
         parameter(nmax=10000)
-        double precision x(3,nmax),mass(nmax)
+        double precision x(3,nmax),mass(nmax),xnow(3)
         double precision lbox,hlbox
         integer umblist(nmax,2)
         double precision xcom(3,2),mtot,r2,dx
         double precision rcom(3)
 C
-        integer i,j,i1,i2,nf,ip
+        integer i,j,i1,i2,nf,ip,i0
 C
         do j=1,3
           xcom(j,1)=0.d0
           xcom(j,2)=0.d0
         enddo
         mtot=0.d0
+        i0=umblist(2,1)
         do i=2,umblist(1,1)
           ip=umblist(i,1)
           do j=1,3
-            xcom(j,1)=xcom(j,1)+mass(ip)*x(j,ip)
+            dx=x(j,ip)-x(j,i0)
+            if (dx.gt.hlbox) then
+              xnow(j)=x(j,ip)-lbox
+            elseif (dx.lt.-hlbox) then
+              xnow(j)=x(j,ip)+lbox
+            else
+              xnow(j)=x(j,ip)
+            endif
+          enddo
+          do j=1,3
+            xcom(j,1)=xcom(j,1)+mass(ip)*xnow(j)
           enddo
           mtot=mtot+mass(ip)
         enddo
@@ -1569,10 +1604,21 @@ C
         enddo
 C
         mtot=0.d0
+        i0=umblist(2,2)
         do i=2,umblist(1,2)
           ip=umblist(i,2)
           do j=1,3
-            xcom(j,2)=xcom(j,2)+mass(ip)*x(j,ip)
+            dx=x(j,ip)-x(j,i0)
+            if (dx.gt.hlbox) then
+              xnow(j)=x(j,ip)-lbox
+            elseif (dx.lt.-hlbox) then
+              xnow(j)=x(j,ip)+lbox
+            else
+              xnow(j)=x(j,ip)
+            endif
+          enddo
+          do j=1,3
+            xcom(j,2)=xcom(j,2)+mass(ip)*xnow(j)
           enddo
           mtot=mtot+mass(ip)
         enddo
@@ -1630,17 +1676,17 @@ C solvent values
         double precision As(nmax),Bs(nmax),vtot(nmax)
 C
         double precision gr(3,nmax)
-        integer iin(nmax)
         integer i,j
 C
         common /solvent/ gr2,alp,x0,g0,As,Bs,vtot,w,npts,ncpu
 C
         npts=1000
 C
-        As(1)=7.85890042d5*12.d0*1.0d0
-        Bs(1)=6.36687196d2*6.d0* 1.0d0
-        As(2)=6.91773368d4*12.d0*1.0d0
-        Bs(2)=1.16264660d2*6.d0* 1.0d0
+        As(1)=7.85890042d5*12.d0
+        As(2)=6.91773368d4*12.d0
+C
+        Bs(1)=6.36687196d2*6.d0
+        Bs(2)=1.16264660d2*6.d0
 C
         x0(1)= 4.0665871952666128d0     
         g0(1)= 1.1776140774892252d0     
@@ -1664,11 +1710,13 @@ C
           enddo
         enddo
 C
-        w(1)=(gr(3,1)-gr(1,1))/2.d0
-        w(2)=(gr(3,2)-gr(1,2))/2.d0
+        do i=1,2
+          w(i)=(gr(3,i)-gr(1,i))/2.d0
+        enddo
 C
-        vtot(1)=16.d0/3.d0*3.1415927d0*w(1)*g0(1)/dble(npts)*0.0334d0
-        vtot(2)=16.d0/3.d0*3.1415927d0*w(2)*g0(2)/dble(npts)*0.0334d0
+        do i=1,2
+          vtot(i)=16.d0/3.d0*3.1415927d0*w(i)*g0(i)/dble(npts)*0.0334d0
+        enddo
 C
       return
       end
@@ -1721,6 +1769,116 @@ C
         enddo
 999     format(a)
         close(20)
+C
+      return
+      end
+CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+      subroutine makemol()
+        integer nmax
+        parameter(nmax=10000)
+C
+        integer ires(nmax),imol(nmax),neigh(1000,1000)
+        integer todo(nmax)
+        integer i,inow,i1,i2,j1,j2,n,k,j
+C paramtop values
+        integer natom,ntyp,nbonh,nbona,ntheth,ntheta
+        integer nphih,nphia,nnb,nres,nmol
+        double precision charge(nmax),mass(nmax)
+        integer ityp(nmax),nbparm(nmax),nrpnt(nmax),nmpnt(nmax)
+        double precision kbnd(nmax),rbnd(nmax),kang(nmax),tang(nmax)
+        double precision kdih(nmax),pdih(nmax),ndih(nmax)
+        double precision scee(nmax),scnb(nmax)
+        double precision alj(nmax),blj(nmax)
+        integer bhlist(3,nmax),balist(3,nmax)
+        integer ahlist(4,nmax),aalist(4,nmax)
+        integer dhlist(5,nmax),dalist(5,nmax)
+        integer excl(nmax)
+        double precision kumb1,kumb2,rumb
+        integer umblist(nmax,2)
+C
+        common /param/ natom,ntyp,nbonh,nbona,ntheth,ntheta,nphih,nphia,
+     &       nnb,nres,charge,mass,ityp,nbparm,nrpnt,kbnd,rbnd,kang,tang,
+     &       kdih,pdih,ndih,scee,scnb,alj,blj,bhlist,balist,ahlist,
+     &       aalist,dhlist,dalist,excl,kumb1,kumb2,umblist,rumb,
+     &       nmpnt,nmol
+C
+        do i=1,nres
+          neigh(1,i)=1
+        enddo
+C
+        inow=0
+        do i=1,natom
+          if(i.eq.nrpnt(inow+1)) inow=inow+1
+          ires(i)=inow
+        enddo
+        do i=1,nbonh
+          i1=bhlist(1,i)
+          i2=bhlist(2,i)
+          j1=ires(i1)
+          j2=ires(i2)
+          if(j1.ne.j2) then
+            n=neigh(1,j1)+1
+            neigh(1,j1)=n
+            neigh(n,j1)=j2
+            n=neigh(1,j2)+1
+            neigh(1,j2)=n
+            neigh(n,j2)=j1
+          endif
+        enddo
+        do i=1,nbona
+          i1=balist(1,i)
+          i2=balist(2,i)
+          j1=ires(i1)
+          j2=ires(i2)
+          if(j1.ne.j2) then
+            n=neigh(1,j1)+1
+            neigh(1,j1)=n
+            neigh(n,j1)=j2
+            n=neigh(1,j2)+1
+            neigh(1,j2)=n
+            neigh(n,j2)=j1
+          endif
+        enddo
+C
+        nmol=0
+        do i=1,nres
+          imol(i)=0
+        enddo
+C
+        do i=1,nres
+          if (imol(i).eq.0) then
+            nmol=nmol+1
+            imol(i)=nmol
+            i1=1
+            i2=1
+            todo(1)=i
+            do while (i1.le.i2)
+              j=todo(i1)
+              j1=neigh(1,j)
+              do k=2,j1
+                j2=neigh(k,j)
+                if (imol(j2).eq.0) then
+                  i2=i2+1
+                  todo(i2)=j2
+                  imol(j2)=nmol
+                endif
+              enddo
+              i1=i1+1
+            enddo
+          endif
+        enddo
+C
+        j=0
+        do i=1,nres
+          if (imol(i).ne.j) then
+            if (j+1.ne.imol(i)) then
+              write(0,*) 'NONE SEQUENTIAL RESIDUES IN MOLECULE'
+            endif
+            j=j+1
+            nmpnt(j)=nrpnt(i)
+          endif
+        enddo
+        nmpnt(nmol+1)=natom+1
 C
       return
       end
