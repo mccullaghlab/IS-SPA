@@ -9,9 +9,9 @@ module initialize
 		use forcefield
 		use config
 		use omp
-        	character*64 frst, prmtop, fname
+        	character*64 frst, prmtop
 		! read input
-		call getinput(prmtop,frst,fname)
+		call getinput(prmtop,frst)
 		! set parameters
 		ncpu=2
 		dt=0.002d0
@@ -33,11 +33,11 @@ module initialize
 
 
 	! read the input information from a text file
-        subroutine getinput(prmtop,frst,fname)
+        subroutine getinput(prmtop,frst)
 		use config
 		use umbrella
 		implicit none
-        	character*64 frst,fname,prmtop
+        	character*64 frst,prmtop
         	integer numb1,numb2,i
 !
 		open(20,FILE="input.dat",STATUS='old')

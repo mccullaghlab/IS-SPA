@@ -2,6 +2,8 @@
 !C  Things to do:
 !C  	- update config file reader to name value pair etc
 !C	- add MD portion
+!C	- debug MD portion
+!C 	- add solvent
 !C 	- start openACC conversion
 !C	- add timing of each step
 !C  Things to note:

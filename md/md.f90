@@ -28,47 +28,51 @@ endsubroutine run_simulation
 subroutine perform_md(stepsToPerform)
 	use config
 	use forcefield
-	use atom_params
+	use atom_prop
 	use random
 	use initialize
 	implicit none
 	integer stepsToPerform
 	integer step
+	integer atom
+	integer j
+	double precision r2, rcom(3)
+	double precision try
        
 
 	do step=1, stepsToPerform 
 !  Get new forces
-		call getfrc()
+		!call getfrc()
 !  Increment velocity and position
-!$OMP parallel do schedule(static) num_threads(ncpu) private(i,j,try) shared(natom,x,v,f,pnu,T,mass,hdt,dt)
-		do i=1,natom
+!!$OMP parallel do schedule(static) num_threads(ncpu) private(i,j,try) shared(natom,x,v,f,pnu,T,mass,hdt,dt)
+		do atom=1,natom
 			try=rand()
 			if (try.lt.pnu) then
-				call thermo(v(:,i),mass(i))
+				call thermo(v(:,atom),mass(atom))
 				do j=1,3
-			    		v(j,i)=v(j,i)+f(j,i)/mass(i)*hdt
-			    		x(j,i)=x(j,i)+dt*v(j,i)
+			    		v(j,atom)=v(j,atom)+f(j,atom)/mass(atom)*hdt
+			    		x(j,atom)=x(j,atom)+dt*v(j,atom)
 			  	enddo
 			else
 				do j=1,3
-					v(j,i)=v(j,i)+f(j,i)/mass(i)*dt
-					x(j,i)=x(j,i)+dt*v(j,i)
+					v(j,atom)=v(j,atom)+f(j,atom)/mass(atom)*dt
+					x(j,atom)=x(j,atom)+dt*v(j,atom)
 				enddo
 			endif
 		enddo
-!$OMP end parallel do
+!!$OMP end parallel do
 		call wrap()
 	enddo
             call getcom(r2,rcom)
-            write(15,999) igo,jgo-1,r2
-999         format(i7,i1,1X,f16.12)
+!            write(15,999) igo,jgo-1,r2
+!999         format(i7,i1,1X,f16.12)
 
 endsubroutine perform_md
 
 subroutine open_output_files
 	use rst_file
 	use config, only : fname
-	use atom_params
+	use atom_prop
 	implicit none
 	character*80 xyz
 	character*80 vel
@@ -88,7 +92,7 @@ subroutine open_output_files
 551     format(a,'.log')
         write(com,550) trim(fname)
 550     format(a,'.dat')
-C
+
         open(19,FILE=xyz,STATUS='unknown')
         write(19,'(a12)') "default_name"
         open(18,FILE=vel,STATUS='unknown')
@@ -97,24 +101,24 @@ C
         write(17,'(a12)') "default_name"
         open(16,FILE=ene,STATUS='unknown')
         open(15,FILE=com,STATUS='unknown')
-        call getene(x,v,lbox,hlbox,16,0)
+        call getene(16,0)
 
 endsubroutine open_output_files
 
 subroutine write_output_files()
 	use forcefield, only : natom
-	use atom_params
+	use atom_prop
 	implicit none
 
-          call writecrd(x,lbox,natom,19)
-          call writecrd(v,lbox,natom,18)
-          call writecrd(f,lbox,natom,17)
+	call writecrd(x,lbox,natom,19)
+	call writecrd(v,lbox,natom,18)
+	call writecrd(f,lbox,natom,17)
 
-endsubroutine write_output_files()
+endsubroutine write_output_files
 
 subroutine close_output_files()
 	use rst_file
-	use atom_params
+	use atom_prop
 	use forcefield, only : natom
 	implicit none
 
@@ -131,14 +135,16 @@ endsubroutine close_output_files
 
 subroutine getene(nf,nstep)
         use forcefield
+	use atom_prop
+	use umbrella
 	implicit none
         integer i,j,k,iex,jex,it,jt,nlj
         integer i1,i2,i3,i4,i5,nf,nstep
         double precision r2,r6,elj,ec,ebnd,eang,e14e,e14v,edih,ekin,erst
         double precision r12,r23,rdot,th,d1(3),d2(3),rcom(3)
-        double precision c11,c12,c13,c22,c23,c33,a,b
+        double precision c11,c12,c13,c22,c23,c33,a,b, dx
 
-        call getcom(x,lbox,hlbox,umblist,mass,r2,rcom)
+        call getcom(r2,rcom)
         erst=10.d0*(r2-rumb)**2
 
         elj=0.d0
@@ -393,14 +399,15 @@ subroutine getene(nf,nstep)
 998     format(2(2X,a14,f8.4))
 996     format(2X,a14,f8.4)
 997     format('TIME STEP:  ',i8)
-C
+
       return
       end
 
 subroutine getfrc()
-        use atom_params
+        use atom_prop
 	use forcefield
 	use random
+	use umbrella
 !	use solvent
 	implicit none
 
@@ -414,7 +421,6 @@ subroutine getfrc()
 !
         double precision rnow,x1,x2,x3,y1,y2,y3,dx,dy,dz
         double precision gnow,fs,try,prob
-        double precision rand
         double precision rcom(3)
         integer igo,ngo
 
@@ -425,100 +431,100 @@ subroutine getfrc()
 !!$OMP& private(i,it,j,jt,k,ngo,rnow,prob,try,x1,x2,x3,y1,y2,y3,r2
 !!$OMP&             ,gnow,igo,dx,dy,dz,r6,fs,dis)
 !!$OMP& shared(natom,npts,w,x0,ityp,gr2,alp,g0,f,x,lbox,hlbox)
-	do i=1,natom
-		do j=1,3
-			f(j,i)=0.d0
-		enddo
-		it=ityp(i)
-		do j=1,natom
-			if (j.ne.i) then
-				do k=1,3
-					dis(k,j)=x(k,i)-x(k,j)
-					if (dis(k,j).gt.hlbox) then
-						dis(k,j)=dis(k,j)-lbox
-					endif
-					if (dis(k,j).lt.-hlbox) then
-						dis(k,j)=dis(k,j)+lbox
-					endif
-				enddo
-			endif
-		enddo
-		do ngo=1,npts
-			rnow=1.d0-2.d0*rand()
-			prob=rnow*rnow
-			try=rand()
-			do while(try.lt.prob)
-				rnow=1.d0-2.d0*rand()
-				prob=rnow*rnow
-				try=rand()
-			enddo
-			rnow=w(it)*rnow+x0(it)
-			x1=1.d0-2.d0*rand()
-			x2=1.d0-2.d0*rand()
-			r2=x1*x1+x2*x2
-			do while (r2.gt.1.d0)
-				x1=1.d0-2.d0*rand()
-				x2=1.d0-2.d0*rand()
-				r2=x1*x1+x2*x2
-			enddo
-			y1=rnow*(1.d0-2.d0*r2)
-			r2=2.d0*dsqrt(1.d0-r2)
-			y2=rnow*x1*r2
-			y3=rnow*x2*r2
-			
-			gnow=1.d0
-			igo=1
-			j=0
-			do while(igo.eq.1)
-				j=j+1
-				if (j.eq.i) j=j+1
-				if (i.eq.natom) then
-					if (j.eq.natom-1) igo=-1
-				else
-					if (j.eq.natom) igo=-1
-				endif
-				jt=ityp(j)
-				
-				dx=y1+dis(1,j)
-				dy=y2+dis(2,j)
-				dz=y3+dis(3,j)
-				r2=dx*dx+dy*dy+dz*dz
-				if (r2.lt.gr2(1,jt)) then
-					igo=0
-				elseif (r2.lt.gr2(2,jt)) then
-					gnow=gnow*(-alp(jt)*(dsqrt(r2)-x0(jt))**2+g0(jt))
-				endif
-			enddo
-			
-			if (igo.eq.-1) then
-				r6=rnow**(-6)
-				fs=gnow*r6*(Bs(it)-As(it)*r6)
-				f(1,i)=f(1,i)+fs*y1
-				f(2,i)=f(2,i)+fs*y2
-				f(3,i)=f(3,i)+fs*y3
-			endif
-		enddo
-		do j=1,3
-			f(j,i)=f(j,i)*vtot(it)
-		enddo
-	enddo
-!!C$OMP end parallel do
+!	do i=1,natom
+!		do j=1,3
+!			f(j,i)=0.d0
+!		enddo
+!		it=ityp(i)
+!		do j=1,natom
+!			if (j.ne.i) then
+!				do k=1,3
+!					dis(k,j)=x(k,i)-x(k,j)
+!					if (dis(k,j).gt.hlbox) then
+!						dis(k,j)=dis(k,j)-lbox
+!					endif
+!					if (dis(k,j).lt.-hlbox) then
+!						dis(k,j)=dis(k,j)+lbox
+!					endif
+!				enddo
+!			endif
+!		enddo
+!		do ngo=1,npts
+!			rnow=1.d0-2.d0*rand()
+!			prob=rnow*rnow
+!			try=rand()
+!			do while(try.lt.prob)
+!				rnow=1.d0-2.d0*rand()
+!				prob=rnow*rnow
+!				try=rand()
+!			enddo
+!			rnow=w(it)*rnow+x0(it)
+!			x1=1.d0-2.d0*rand()
+!			x2=1.d0-2.d0*rand()
+!			r2=x1*x1+x2*x2
+!			do while (r2.gt.1.d0)
+!				x1=1.d0-2.d0*rand()
+!				x2=1.d0-2.d0*rand()
+!				r2=x1*x1+x2*x2
+!			enddo
+!			y1=rnow*(1.d0-2.d0*r2)
+!			r2=2.d0*dsqrt(1.d0-r2)
+!			y2=rnow*x1*r2
+!			y3=rnow*x2*r2
+!			
+!			gnow=1.d0
+!			igo=1
+!			j=0
+!			do while(igo.eq.1)
+!				j=j+1
+!				if (j.eq.i) j=j+1
+!				if (i.eq.natom) then
+!					if (j.eq.natom-1) igo=-1
+!				else
+!					if (j.eq.natom) igo=-1
+!				endif
+!				jt=ityp(j)
+!				
+!				dx=y1+dis(1,j)
+!				dy=y2+dis(2,j)
+!				dz=y3+dis(3,j)
+!				r2=dx*dx+dy*dy+dz*dz
+!				if (r2.lt.gr2(1,jt)) then
+!					igo=0
+!				elseif (r2.lt.gr2(2,jt)) then
+!					gnow=gnow*(-alp(jt)*(dsqrt(r2)-x0(jt))**2+g0(jt))
+!				endif
+!			enddo
+!			
+!			if (igo.eq.-1) then
+!				r6=rnow**(-6)
+!				fs=gnow*r6*(Bs(it)-As(it)*r6)
+!				f(1,i)=f(1,i)+fs*y1
+!				f(2,i)=f(2,i)+fs*y2
+!				f(3,i)=f(3,i)+fs*y3
+!			endif
+!		enddo
+!		do j=1,3
+!			f(j,i)=f(j,i)*vtot(it)
+!		enddo
+!	enddo
+!!$OMP end parallel do
 !  Restraint
-        call getcom(x,lbox,hlbox,umblist,mass,r2,rcom)
-        frst1=kumb1*(r2-rumb)
-        frst2=kumb2*(r2-rumb)
-        do i=2,umblist(1,1)
-          i1=umblist(i,1)
-          do j=1,3
-            f(j,i1)=f(j,i1)-frst1*rcom(j)*mass(i1)
-          enddo
-        enddo
-        do i=2,umblist(1,2)
-          i1=umblist(i,2)
-          do j=1,3
-            f(j,i1)=f(j,i1)+frst2*rcom(j)*mass(i1)
-          enddo
-        enddo
+	call getcom(r2,rcom)
+	frst1=kumb1*(r2-rumb)
+	frst2=kumb2*(r2-rumb)
+	do i=2,umSel1(1)
+	  i1=umSel1(i)
+	  do j=1,3
+	    f(j,i1)=f(j,i1)-frst1*rcom(j)*mass(i1)
+	  enddo
+	enddo
+	do i=2,umSel2(1)
+	  i1=umSel2(i)
+	  do j=1,3
+	    f(j,i1)=f(j,i1)+frst2*rcom(j)*mass(i1)
+	  enddo
+	enddo
 !  Non-bonded
         iex=1
         if (excl(1).eq.0) then
@@ -844,7 +850,7 @@ subroutine writerst(x,v,lbox,natom,rst)
         double precision lbox
         character*64 rst
         integer i,ip
-C
+
         open(20,FILE=rst,STATUS='unknown')
         write(20,999)
         write(20,998) natom,1.d0
@@ -911,7 +917,7 @@ endsubroutine writecrd
 subroutine getcom(r2,rcom)
 	use forcefield, only : natom, mass
 	use umbrella
-	use atom_params
+	use atom_prop
 	implicit none
         double precision xnow(3)
         double precision xcom(3,2),mtot,r2,dx
@@ -945,11 +951,11 @@ subroutine getcom(r2,rcom)
         do j=1,3
           xcom(j,1)=xcom(j,1)/mtot
         enddo
-C
+!
         mtot=0.d0
-        i0=umblist(2,2)
-        do i=2,umblist(1,2)
-          ip=umblist(i,2)
+        i0=umSel2(2)
+        do i=2,umSel2(1)
+          ip=umSel2(i)
           do j=1,3
             dx=x(j,ip)-x(j,i0)
             if (dx.gt.hlbox) then
@@ -968,7 +974,7 @@ C
         do j=1,3
           xcom(j,2)=xcom(j,2)/mtot
         enddo
-C
+
         r2=0.d0
         do i=1,3
           dx=xcom(i,1)-xcom(i,2)
@@ -985,6 +991,6 @@ C
         do i=1,3
           rcom(i)=rcom(i)/r2
         enddo
-C
+
       return
 endsubroutine getcom
