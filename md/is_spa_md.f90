@@ -1,6 +1,9 @@
 !CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
 !C  Things to do:
-!C
+!C  	- update config file reader to name value pair etc
+!C	- add MD portion
+!C 	- start openACC conversion
+!C	- add timing of each step
 !C  Things to note:
 !C     - H mass = 12
 !C     - no interaction cut-off
@@ -22,8 +25,9 @@ program is_spa
 	call initialize_run()
 	! initialize random number generator
 	call init_rand()
+	! perform MD
+	call run_simulation()
 
-	print*, x(1,1), x(2,1), x(3,1)
 
 endprogram is_spa
 

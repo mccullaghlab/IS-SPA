@@ -18,6 +18,7 @@ module config
 	integer nSteps  		! number of steps
 	integer deltaWrite		! how frequently to write
 	integer ivel			! 0 - do not read vels, 1 - read vels
+	character*64 fname
 
 endmodule config
 
@@ -144,5 +145,9 @@ module random
 
 endmodule random
 
+module rst_file
 
+	character*80 rst
+
+endmodule rst_file
 
